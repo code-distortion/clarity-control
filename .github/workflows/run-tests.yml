@@ -1,0 +1,122 @@
+name: run-tests
+
+on:
+  push:
+#    branches: [ "main" ]
+  pull_request:
+#    branches: [ "main" ]
+  schedule:
+    - cron: "0 0 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+
+  all_tests:
+
+    name: "PHP${{ matrix.php }} TB${{ matrix.testbench }} ${{ matrix.os-title }} ${{ matrix.dependency-prefer-title }}"
+    runs-on: "${{ matrix.os }}"
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ "ubuntu-latest", "macos-latest", "windows-latest" ]
+        php: [ "8.3", "8.2", "8.1", "8.0" ]
+        testbench: [ "^8.0", "^7.0", "^6.26", "^6.12" ]
+        dependency-prefer: [ "prefer-stable", "prefer-lowest" ]
+        include:
+          - php: "8.3"
+            phpunit: "^10.1.0"
+            phpunit-config-file: "phpunit.github-actions.xml.dist"
+          - php: "8.2"
+            phpunit: "^10.1.0"
+            phpunit-config-file: "phpunit.github-actions.xml.dist"
+          - php: "8.1"
+            phpunit: "^10.1.0"
+            phpunit-config-file: "phpunit.github-actions.xml.dist"
+          - php: "8.0"
+            phpunit: "^9.3"
+            phpunit-config-file: "phpunit.github-actions.up-to-9.xml.dist"
+
+          - testbench: "^7.0"
+            phpunit: "^9.3"
+            phpunit-config-file: "phpunit.github-actions.up-to-9.xml.dist"
+          - testbench: "^6.26"
+            phpunit: "^9.3"
+            phpunit-config-file: "phpunit.github-actions.up-to-9.xml.dist"
+          - testbench: "^6.12"
+            phpunit: "^9.3"
+            phpunit-config-file: "phpunit.github-actions.up-to-9.xml.dist"
+          - testbench: "^6.12"
+            phpunit: "^9.3"
+            phpunit-config-file: "phpunit.github-actions.up-to-9.xml.dist"
+
+          - os: "ubuntu-latest"
+            os-title: "ubuntu"
+          - os: "macos-latest"
+            os-title: "macos"
+          - os: "windows-latest"
+            os-title: "win"
+
+          - dependency-prefer: "prefer-stable"
+            dependency-prefer-title: "stable"
+          - dependency-prefer: "prefer-lowest"
+            dependency-prefer-title: "lowest"
+        exclude:
+          - testbench: "^8.0"
+            php: "8.0"
+          - testbench: "^6.26" # Laravel 8 for higher versions of PHP
+            php: "8.0"
+          - testbench: "^6.12" # Laravel 8 for lower versions of PHP
+            php: "8.3"
+          - testbench: "^6.12" # Laravel 8 for lower versions of PHP
+            php: "8.2"
+          - testbench: "^6.12" # Laravel 8 for lower versions of PHP
+            php: "8.1"
+
+    steps:
+      - name: "Checkout code"
+        uses: "actions/checkout@v4"
+
+      - name: "Validate composer.json and composer.lock"
+        run: "composer validate --strict"
+
+      - name: "Setup PHP"
+        uses: "shivammathur/setup-php@v2"
+        with:
+          php-version: "${{ matrix.php }}"
+          extensions: fileinfo # required by league/flysystem on Windows
+          ini-values: "error_reporting=E_ALL"
+          coverage: none
+        env:
+          COMPOSER_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      # find composer's cache directory - so we know which directory to cache in the next step
+      - name: "Find composer's cache directory"
+        id: "composer-cache"
+        shell: bash # make sure this step works on Windows - see https://github.com/actions/runner/issues/2224#issuecomment-1289533957
+        run: |
+          echo "composer_cache_dir=$(composer config cache-files-dir)">> "$GITHUB_OUTPUT"
+
+      - name: "Cache composer's cache directory"
+        uses: "actions/cache@v3"
+        with:
+          path: "${{ steps.composer-cache.outputs.composer_cache_dir }}"
+          key: "[${{ matrix.os }}][php-${{ matrix.php }}][testbench-${{ matrix.testbench }}][${{ matrix.dependency-prefer }}][composer.json-${{ hashFiles('composer.json') }}]"
+
+      - name: "Install dependencies"
+        uses: "nick-fields/retry@v2"
+        with:
+          timeout_minutes: 5
+          max_attempts: 5
+          shell: bash # make sure "^" characters are interpreted properly on Windows (e.g. in "^5.0")
+          command: |
+            composer remove "infection/infection" --dev --no-interaction --no-update
+            composer remove "phpstan/phpstan" --dev --no-interaction --no-update
+            composer remove "squizlabs/php_codesniffer" --dev --no-interaction --no-update
+            composer require "orchestra/testbench:${{ matrix.testbench }}" --dev --no-interaction --no-update
+            composer require "phpunit/phpunit:${{ matrix.phpunit }}" --dev --no-interaction --no-update
+            composer update --${{ matrix.dependency-prefer }} --prefer-dist --no-interaction --optimize-autoloader --no-progress
+
+      - name: "Execute tests"
+        run: vendor/bin/phpunit --configuration=${{ matrix.phpunit-config-file }} --no-coverage --stop-on-error --stop-on-failure
